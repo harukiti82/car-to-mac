@@ -5,6 +5,7 @@
  * ============================================================
  *  操作:
  *    スライダーをドラッグ  上=速い / 下=遅い（0=停止）
+ *    速度フィールドをクリック → 数字キーで入力 → Enter で確定
  *    離しても設定速度を維持して走り続ける
  *    STOP ボタン: 即時停止してノブを0に戻す
  *
@@ -26,15 +27,19 @@ InetAddress    arduinoAddr;
 
 // ---- レイアウト定数 ----
 final int W = 300;
-final int H = 520;
+final int H = 570;
 
 final int SLIDER_X      = W / 2;
 final int SLIDER_TOP    = 100;  // 上端（速度MAX = 100%）
-final int SLIDER_BOTTOM = 390;  // 下端（速度MIN = 0%）
+final int SLIDER_BOTTOM = 360;  // 下端（速度MIN = 0%）
 final int KNOB_R        = 24;
 
+final int FIELD_Y = 435;  // 入力フィールド中心Y
+final int FIELD_W = 160;
+final int FIELD_H = 36;
+
 final int BTN_X = W / 2;
-final int BTN_Y = 460;
+final int BTN_Y = 510;
 final int BTN_W = 130;
 final int BTN_H = 44;
 
@@ -43,13 +48,17 @@ float   knobY    = SLIDER_BOTTOM;  // 初期位置: 最下端（速度0）
 boolean dragging = false;
 int     speedPct = 0;  // 0〜100
 
+// ---- テキスト入力 ----
+String  inputText    = "";
+boolean inputFocused = false;
+
 // ---- 送信タイミング ----
 int lastSendMs = 0;
 final int SEND_INTERVAL = 50;  // 20 Hz
 
 // ============================================================
 void setup() {
-  size(300, 520);
+  size(300, 570);
   textAlign(CENTER, CENTER);
   smooth();
 
@@ -75,6 +84,7 @@ void draw() {
   drawTitle();
   drawSlider();
   drawSpeedLabel();
+  drawInputField();
   drawStopButton();
 }
 
@@ -135,7 +145,29 @@ void drawSpeedLabel() {
   color col = (speedPct == 0) ? color(140) : color(50, 200, 100);
   fill(col);
   textSize(20);
-  text((speedPct == 0 ? "停止" : "前進") + "  " + speedPct + "%", SLIDER_X, 422);
+  text((speedPct == 0 ? "停止" : "前進") + "  " + speedPct + "%", SLIDER_X, 395);
+}
+
+// ---- テキスト入力フィールド ----
+void drawInputField() {
+  // ラベル
+  fill(120);
+  noStroke();
+  textSize(11);
+  text("速度を直接入力（0〜100）", SLIDER_X, FIELD_Y - 24);
+
+  // フィールド背景
+  fill(inputFocused ? color(48) : color(38));
+  stroke(inputFocused ? color(80, 160, 255) : color(75));
+  strokeWeight(2);
+  rect(SLIDER_X - FIELD_W / 2, FIELD_Y - FIELD_H / 2, FIELD_W, FIELD_H, 7);
+
+  // 入力テキスト + カーソル点滅
+  fill(255);
+  noStroke();
+  textSize(17);
+  String cursor = (inputFocused && frameCount % 50 < 25) ? "|" : "";
+  text(inputText + cursor + "  %", SLIDER_X, FIELD_Y);
 }
 
 // ---- STOP ボタン ----
@@ -154,6 +186,11 @@ boolean overButton(int mx, int my) {
          my > BTN_Y - BTN_H / 2 && my < BTN_Y + BTN_H / 2;
 }
 
+boolean overField(int mx, int my) {
+  return mx > SLIDER_X - FIELD_W / 2 && mx < SLIDER_X + FIELD_W / 2 &&
+         my > FIELD_Y - FIELD_H / 2  && my < FIELD_Y + FIELD_H / 2;
+}
+
 // ============================================================
 //  マウス操作
 // ============================================================
@@ -161,8 +198,19 @@ void mousePressed() {
   // STOP ボタン
   if (overButton(mouseX, mouseY)) {
     execStop();
+    inputFocused = false;
     return;
   }
+
+  // テキスト入力フィールド
+  if (overField(mouseX, mouseY)) {
+    inputFocused = true;
+    inputText    = "";  // クリックで入力クリア
+    return;
+  }
+
+  // それ以外をクリックしたらフィールドのフォーカスを外す
+  inputFocused = false;
 
   // スライダーレール付近ならどこでもドラッグ開始
   if (abs(mouseX - SLIDER_X) < 36 &&
@@ -183,6 +231,40 @@ void mouseDragged() {
 void mouseReleased() {
   // 離してもノブはその位置のまま、速度を維持
   dragging = false;
+}
+
+// ============================================================
+//  キーボード入力
+// ============================================================
+void keyPressed() {
+  if (!inputFocused) return;
+
+  if (key >= '0' && key <= '9') {
+    // 3桁（100）以上は入力させない
+    if (inputText.length() < 3) {
+      inputText += key;
+    }
+  } else if (key == BACKSPACE) {
+    if (inputText.length() > 0) {
+      inputText = inputText.substring(0, inputText.length() - 1);
+    }
+  } else if (key == ENTER || key == RETURN) {
+    applyInput();
+  } else if (key == ESCAPE) {
+    inputText    = "";
+    inputFocused = false;
+  }
+}
+
+// 入力値を確定してスライダーに反映
+void applyInput() {
+  if (inputText.length() > 0) {
+    int val = constrain(Integer.parseInt(inputText), 0, 100);
+    speedPct = val;
+    knobY    = map(val, 0, 100, SLIDER_BOTTOM, SLIDER_TOP);
+  }
+  inputText    = "";
+  inputFocused = false;
 }
 
 // ============================================================
