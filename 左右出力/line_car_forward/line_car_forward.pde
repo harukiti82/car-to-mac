@@ -250,7 +250,8 @@ void keyPressed() {
     }
   } else if (key == ENTER || key == RETURN) {
     applyInput();
-  } else if (key == ESCAPE) {
+  } else if (key == ESC) {
+    key          = 0;  // ESC によるウィンドウ終了を抑制
     inputText    = "";
     inputFocused = false;
   }
