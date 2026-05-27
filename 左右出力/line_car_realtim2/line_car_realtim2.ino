@@ -64,6 +64,13 @@ void setup()
 
 void loop()
 {
+  // WiFi が切断されていたら再接続
+  if (WiFi.status() != WL_CONNECTED) {
+    if (Serial) Serial.println("WiFi disconnected. Reconnecting...");
+    connectWiFi();
+    Udp.begin(LOCAL_UDP_PORT);
+  }
+
   receiveUDP();
 
   if (millis() - lastCmdMs > CMD_TIMEOUT) {
@@ -82,6 +89,9 @@ void loop()
   // 毎ループ出力 → リアルタイム反映
   L_SERVO.writeMicroseconds(1500 + L_SPEED);
   R_SERVO.writeMicroseconds(1500 - R_SPEED);
+
+  // WiFi スタックとサーボタイマー割り込みの競合を緩和
+  delay(10);
 }
 
 // ============================================================
@@ -136,14 +146,17 @@ void receiveUDP()
     lastCmdMs = millis();
   }
 
-  Serial.print("recv \"");
-  Serial.print(msg);
-  Serial.print("\"  L=");
-  Serial.print(leftPct);
-  Serial.print("  R=");
-  Serial.print(rightPct);
-  Serial.print("  run=");
-  Serial.println(running ? "ON" : "OFF");
+  // USB 未接続（バッテリー駆動）のときバッファ満杯でブロックするのを防ぐ
+  if (Serial) {
+    Serial.print("recv \"");
+    Serial.print(msg);
+    Serial.print("\"  L=");
+    Serial.print(leftPct);
+    Serial.print("  R=");
+    Serial.print(rightPct);
+    Serial.print("  run=");
+    Serial.println(running ? "ON" : "OFF");
+  }
 
   // ACK 返信
   Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
