@@ -24,7 +24,7 @@
 import java.net.*;
 
 // ---- 通信設定 ----
-final String ARDUINO_IP   = "10.123.106.50";
+final String ARDUINO_IP   = "192.168.4.1";
 final int    ARDUINO_PORT = 8888;
 
 DatagramSocket udpSocket;
