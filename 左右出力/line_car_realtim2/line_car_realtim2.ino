@@ -77,6 +77,7 @@ String s1buf = "";
 void setup()
 {
   Serial.begin(115200);
+  Serial.println("=== line_car v3 manual-pulse ===");
 
   pinMode(L_PIN, OUTPUT);
   pinMode(R_PIN, OUTPUT);
@@ -143,6 +144,16 @@ void loop()
   delayMicroseconds(R_us);
   digitalWrite(R_PIN, LOW);
   interrupts();
+
+  // デバッグ: パルス幅の値を確認
+  static unsigned long lastDbg = 0;
+  if (Serial && millis() - lastDbg > 500) {
+    lastDbg = millis();
+    Serial.print("PULSE L=");
+    Serial.print(L_us);
+    Serial.print(" R=");
+    Serial.println(R_us);
+  }
 
   // 20ms周期の残り時間を待つ
   delay(max(1, 20 - (L_us + R_us) / 1000));
