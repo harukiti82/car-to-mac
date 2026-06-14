@@ -79,8 +79,8 @@ void setup()
 {
   Serial.begin(115200);
 
-  L_SERVO.attach(14, 1000, 2000); // PORT(A0)
-  R_SERVO.attach(15, 1000, 2000); // PORT(A1)
+  L_SERVO.attach(9,  1000, 2000); // D9
+  R_SERVO.attach(10, 1000, 2000); // D10
 
   L_SERVO.writeMicroseconds(1500);
   R_SERVO.writeMicroseconds(1500);
@@ -131,8 +131,22 @@ void loop()
   }
 
   // 毎ループ出力 → リアルタイム反映
-  L_SERVO.writeMicroseconds(1500 + L_SPEED);
-  R_SERVO.writeMicroseconds(1500 - R_SPEED);   // R は鏡対称で符号反転
+  int L_us = 1500 + L_SPEED;
+  int R_us = 1500 - R_SPEED;   // R は鏡対称で符号反転
+  L_SERVO.writeMicroseconds(L_us);
+  R_SERVO.writeMicroseconds(R_us);
+
+  // デバッグ: 実際にサーボに送っている値を確認（動作確認後に削除）
+  static unsigned long lastDbg = 0;
+  if (Serial && millis() - lastDbg > 500) {
+    lastDbg = millis();
+    Serial.print("DBG run=");
+    Serial.print(running ? "ON" : "OFF");
+    Serial.print(" L_us=");
+    Serial.print(L_us);
+    Serial.print(" R_us=");
+    Serial.println(R_us);
+  }
 
   // WiFi スタックとサーボタイマー割り込みの競合を緩和
   delay(10);
