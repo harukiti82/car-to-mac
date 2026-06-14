@@ -25,7 +25,6 @@
  * ============================================================
  */
 
-#include <Servo.h>
 #include <WiFiS3.h>
 #include <WiFiUdp.h>
 
@@ -37,9 +36,9 @@ const unsigned int LOCAL_UDP_PORT = 8888;
 WiFiUDP Udp;
 char packetBuf[64];
 
-// ---------- サーボ ----------
-Servo L_SERVO;
-Servo R_SERVO;
+// ---------- サーボ（手動パルス生成）----------
+const int L_PIN = 9;
+const int R_PIN = 10;
 
 int L_SPEED = 0;   // -500〜500 (0=STOP)
 int R_SPEED = 0;   // -500〜500 (0=STOP)
@@ -79,11 +78,10 @@ void setup()
 {
   Serial.begin(115200);
 
-  L_SERVO.attach(9,  1000, 2000); // D9
-  R_SERVO.attach(10, 1000, 2000); // D10
-
-  L_SERVO.writeMicroseconds(1500);
-  R_SERVO.writeMicroseconds(1500);
+  pinMode(L_PIN, OUTPUT);
+  pinMode(R_PIN, OUTPUT);
+  digitalWrite(L_PIN, LOW);
+  digitalWrite(R_PIN, LOW);
 
   Serial1.begin(115200);  // ESP32-S3 CAM 受信用
 
@@ -130,26 +128,24 @@ void loop()
     R_SPEED = map(rightPct, -100, 100, -MAX_OFFSET, MAX_OFFSET);
   }
 
-  // 毎ループ出力 → リアルタイム反映
-  int L_us = 1500 + L_SPEED;
-  int R_us = 1500 - R_SPEED;   // R は鏡対称で符号反転
-  L_SERVO.writeMicroseconds(L_us);
-  R_SERVO.writeMicroseconds(R_us);
+  // 手動パルス生成（WiFi割り込みと干渉しないよう保護）
+  int L_us = constrain(1500 + L_SPEED, 1000, 2000);
+  int R_us = constrain(1500 - R_SPEED, 1000, 2000);
 
-  // デバッグ: 実際にサーボに送っている値を確認（動作確認後に削除）
-  static unsigned long lastDbg = 0;
-  if (Serial && millis() - lastDbg > 500) {
-    lastDbg = millis();
-    Serial.print("DBG run=");
-    Serial.print(running ? "ON" : "OFF");
-    Serial.print(" L_us=");
-    Serial.print(L_us);
-    Serial.print(" R_us=");
-    Serial.println(R_us);
-  }
+  noInterrupts();
+  digitalWrite(L_PIN, HIGH);
+  delayMicroseconds(L_us);
+  digitalWrite(L_PIN, LOW);
+  interrupts();
 
-  // WiFi スタックとサーボタイマー割り込みの競合を緩和
-  delay(10);
+  noInterrupts();
+  digitalWrite(R_PIN, HIGH);
+  delayMicroseconds(R_us);
+  digitalWrite(R_PIN, LOW);
+  interrupts();
+
+  // 20ms周期の残り時間を待つ
+  delay(max(1, 20 - (L_us + R_us) / 1000));
 }
 
 // ============================================================
