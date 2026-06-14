@@ -219,14 +219,22 @@ void loop()
   g_pulseL_us = constrain(1500 + L_SPEED, 1000, 2000);
   g_pulseR_us = constrain(1500 - R_SPEED, 1000, 2000);
 
-  // デバッグ: パルス幅の値を確認
+  // デバッグ: パルス幅と末尾時点の状態を確認
   static unsigned long lastDbg = 0;
   if (Serial && millis() - lastDbg > 500) {
     lastDbg = millis();
     Serial.print("PULSE L=");
     Serial.print(g_pulseL_us);
     Serial.print(" R=");
-    Serial.println(g_pulseR_us);
+    Serial.print(g_pulseR_us);
+    Serial.print("  run=");
+    Serial.print(running ? "ON" : "OFF");
+    Serial.print(" mode=");
+    Serial.print(mode == MODE_AUTO ? "AUTO" : "MANUAL");
+    Serial.print(" lPct=");
+    Serial.print(leftPct);
+    Serial.print(" age=");
+    Serial.println(millis() - lastCmdMs);  // 最後のUDP受信からの経過(ms)
   }
 
   delay(5);  // loop を回しすぎない程度（パルス生成はISR側なので影響しない）
