@@ -27,6 +27,7 @@
 
 #include <WiFiS3.h>
 #include <WiFiUdp.h>
+#include "FspTimer.h"
 
 // ---------- WiFi AP 設定 ----------
 const char* AP_SSID = "LineCar";
@@ -36,7 +37,7 @@ const unsigned int LOCAL_UDP_PORT = 8888;
 WiFiUDP Udp;
 char packetBuf[64];
 
-// ---------- サーボ（手動パルス生成）----------
+// ---------- サーボ（FspTimer によるハードウェアパルス生成）----------
 const int L_PIN = 9;
 const int R_PIN = 10;
 
@@ -44,6 +45,19 @@ int L_SPEED = 0;   // -500〜500 (0=STOP)
 int R_SPEED = 0;   // -500〜500 (0=STOP)
 
 const int MAX_OFFSET = 500;   // 100% のときのオフセット(us)
+
+// ---------- サーボパルス生成用タイマー ----------
+//  50us ティックの周期割り込みで 50Hz(20ms) のサーボパルスを作る。
+//  loop() の負荷（WiFi/UART処理）と無関係に安定したパルスを出し続ける。
+FspTimer servoTimer;
+
+#define SERVO_TICK_US     50                              // 割り込み周期(us)
+#define SERVO_FRAME_US    20000                           // サーボフレーム(us)=50Hz
+#define SERVO_FRAME_TICKS (SERVO_FRAME_US / SERVO_TICK_US) // = 400
+
+// loop() が書き、ISR がフレーム先頭でラッチする目標パルス幅(us)
+volatile uint16_t g_pulseL_us = 1500;  // 1500=停止
+volatile uint16_t g_pulseR_us = 1500;
 
 // ---------- Processing から受け取る状態 ----------
 int  leftPct  = 0;   // -100〜100 (MANUAL モード用)
@@ -74,15 +88,71 @@ const unsigned long LINE_TIMEOUT = 500; // ms
 String s1buf = "";
 
 // ============================================================
+//  サーボパルス生成 ISR（50us ごとに呼ばれる）
+//    フレーム先頭(tick==0)で両ピンHIGH＆幅をラッチし、
+//    各ピンの幅に達した tick で LOW に落とす。
+// ============================================================
+void servoISR(timer_callback_args_t * /*args*/)
+{
+  static uint16_t tick    = 0;
+  static uint16_t Lticks  = 1500 / SERVO_TICK_US;
+  static uint16_t Rticks  = 1500 / SERVO_TICK_US;
+
+  if (tick == 0) {
+    // フレーム先頭：目標幅をラッチして両ピンを立てる
+    Lticks = g_pulseL_us / SERVO_TICK_US;
+    Rticks = g_pulseR_us / SERVO_TICK_US;
+    digitalWrite(L_PIN, HIGH);
+    digitalWrite(R_PIN, HIGH);
+  } else {
+    if (tick == Lticks) digitalWrite(L_PIN, LOW);
+    if (tick == Rticks) digitalWrite(R_PIN, LOW);
+  }
+
+  if (++tick >= SERVO_FRAME_TICKS) tick = 0;
+}
+
+// ============================================================
+//  サーボタイマー初期化（50us=20kHz の周期割り込み）
+// ============================================================
+void setupServoTimer()
+{
+  uint8_t type;
+  int8_t  ch = FspTimer::get_available_timer(type);
+  if (ch < 0) {
+    // 通常タイマーが空いていなければ PWM 予約タイマーを使う
+    FspTimer::force_use_of_pwm_reserved_timer();
+    ch = FspTimer::get_available_timer(type, true);
+  }
+  if (ch < 0) {
+    Serial.println("Servo timer: no available timer!");
+    return;
+  }
+
+  // 20000Hz = 50us 周期、デューティは使わない(0)
+  servoTimer.begin(TIMER_MODE_PERIODIC, type, ch, 20000.0f, 0.0f, servoISR);
+  servoTimer.setup_overflow_irq();
+  servoTimer.open();
+  servoTimer.start();
+  Serial.print("Servo timer started (type=");
+  Serial.print(type);
+  Serial.print(" ch=");
+  Serial.print(ch);
+  Serial.println(")");
+}
+
+// ============================================================
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("=== line_car v3 manual-pulse ===");
+  Serial.println("=== line_car v4 fsp-timer ===");
 
   pinMode(L_PIN, OUTPUT);
   pinMode(R_PIN, OUTPUT);
   digitalWrite(L_PIN, LOW);
   digitalWrite(R_PIN, LOW);
+
+  setupServoTimer();      // サーボパルスをハードウェアタイマーで生成開始
 
   Serial1.begin(115200);  // ESP32-S3 CAM 受信用
 
@@ -129,34 +199,21 @@ void loop()
     R_SPEED = map(rightPct, -100, 100, -MAX_OFFSET, MAX_OFFSET);
   }
 
-  // 手動パルス生成（WiFi割り込みと干渉しないよう保護）
-  int L_us = constrain(1500 + L_SPEED, 1000, 2000);
-  int R_us = constrain(1500 - R_SPEED, 1000, 2000);
-
-  noInterrupts();
-  digitalWrite(L_PIN, HIGH);
-  delayMicroseconds(L_us);
-  digitalWrite(L_PIN, LOW);
-  interrupts();
-
-  noInterrupts();
-  digitalWrite(R_PIN, HIGH);
-  delayMicroseconds(R_us);
-  digitalWrite(R_PIN, LOW);
-  interrupts();
+  // 目標パルス幅を更新するだけ（実際のパルスは servoISR が独立生成）
+  g_pulseL_us = constrain(1500 + L_SPEED, 1000, 2000);
+  g_pulseR_us = constrain(1500 - R_SPEED, 1000, 2000);
 
   // デバッグ: パルス幅の値を確認
   static unsigned long lastDbg = 0;
   if (Serial && millis() - lastDbg > 500) {
     lastDbg = millis();
     Serial.print("PULSE L=");
-    Serial.print(L_us);
+    Serial.print(g_pulseL_us);
     Serial.print(" R=");
-    Serial.println(R_us);
+    Serial.println(g_pulseR_us);
   }
 
-  // 20ms周期の残り時間を待つ
-  delay(max(1, 20 - (L_us + R_us) / 1000));
+  delay(5);  // loop を回しすぎない程度（パルス生成はISR側なので影響しない）
 }
 
 // ============================================================
@@ -262,7 +319,10 @@ void receiveUDP()
 // ============================================================
 void receiveSerial1()
 {
-  while (Serial1.available()) {
+  // 1回の loop で処理するバイト数を制限し、CAM の連投で UDP 応答が
+  // 詰まる（loop が長時間ブロックされる）のを防ぐ
+  int guard = 0;
+  while (Serial1.available() && guard++ < 64) {
     char c = Serial1.read();
     if (c == '\n') {
       s1buf.trim();
