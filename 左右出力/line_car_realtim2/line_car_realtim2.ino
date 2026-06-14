@@ -1,9 +1,10 @@
 /*
  * ============================================================
  *  2サーボ ラインカー  ―  左右独立で速度制御 (リアルタイム)
- *  Arduino UNO R4 WiFi
+ *  Arduino UNO R4 WiFi  ― APモード（Arduino がホスト）
  * ============================================================
- *  Mac(Processing) --UDP--> UNO R4 --> L/R サーボ
+ *  UNO R4 が WiFi アクセスポイントを立て、Mac が接続する
+ *  Mac(Processing) --UDP--> UNO R4 (192.168.4.1) --> L/R サーボ
  *  ESP32-S3 CAM   --Serial1(UART)--> UNO R4  (ライン誤差)
  *
  *    L_SERVO = 1500 + L_SPEED
@@ -28,9 +29,9 @@
 #include <WiFiS3.h>
 #include <WiFiUdp.h>
 
-// ---------- WiFi 設定 ----------
-const char* WIFI_SSID = "Galaxy A2047DC";
-const char* WIFI_PASS = "rpmn9776";
+// ---------- WiFi AP 設定 ----------
+const char* AP_SSID = "LineCar";
+const char* AP_PASS = "linecar1234";   // 8文字以上必須
 const unsigned int LOCAL_UDP_PORT = 8888;
 
 WiFiUDP Udp;
@@ -86,7 +87,7 @@ void setup()
 
   Serial1.begin(115200);  // ESP32-S3 CAM 受信用
 
-  connectWiFi();
+  startAP();
   Udp.begin(LOCAL_UDP_PORT);
   Serial.print("UDP listening on port ");
   Serial.println(LOCAL_UDP_PORT);
@@ -95,12 +96,6 @@ void setup()
 // ============================================================
 void loop()
 {
-  // WiFi が切断されていたら再接続
-  if (WiFi.status() != WL_CONNECTED) {
-    if (Serial) Serial.println("WiFi disconnected. Reconnecting...");
-    connectWiFi();
-    Udp.begin(LOCAL_UDP_PORT);
-  }
 
   receiveUDP();
   receiveSerial1();
@@ -144,23 +139,20 @@ void loop()
 }
 
 // ============================================================
-void connectWiFi()
+void startAP()
 {
-  // 固定IP（環境に合わせて変更）
-  IPAddress ip(10, 123, 106, 50);
-  IPAddress dns(10, 123, 106, 9);
-  IPAddress gateway(10, 123, 106, 9);
-  IPAddress subnet(255, 255, 255, 0);
-  WiFi.config(ip, dns, gateway, subnet);
+  Serial.print("Starting AP: ");
+  Serial.println(AP_SSID);
 
-  Serial.print("Connecting to ");
-  Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  int status = WiFi.beginAP(AP_SSID, AP_PASS);
+  if (status != WL_AP_LISTENING) {
+    Serial.println("AP failed! Retrying...");
+    delay(1000);
+    status = WiFi.beginAP(AP_SSID, AP_PASS);
+  }
 
-  Serial.println();
-  Serial.print("Connected!  IP = ");
-  Serial.println(WiFi.localIP());
+  Serial.print("AP started!  IP = ");
+  Serial.println(WiFi.localIP());   // 192.168.4.1
 }
 
 // ============================================================
@@ -169,71 +161,77 @@ void connectWiFi()
 // ============================================================
 void receiveUDP()
 {
-  int packetSize = Udp.parsePacket();
-  if (packetSize <= 0) return;
+  int packetSize;
+  // 1フレームで複数パケット届いた場合も全部処理する
+  while ((packetSize = Udp.parsePacket()) > 0) {
+    int len = Udp.read(packetBuf, sizeof(packetBuf) - 1);
+    if (len <= 0) continue;
+    packetBuf[len] = '\0';
 
-  int len = Udp.read(packetBuf, sizeof(packetBuf) - 1);
-  if (len <= 0) return;
-  packetBuf[len] = '\0';
+    String msg = String(packetBuf);
+    msg.trim();
 
-  String msg = String(packetBuf);
-  msg.trim();
+    // ACK 返信先を確定しておく（endPacket 前に remoteIP が変わる場合に備え）
+    IPAddress remoteIp   = Udp.remoteIP();
+    uint16_t  remotePort = Udp.remotePort();
 
-  if (msg == "MODE:AUTO") {
-    mode = MODE_AUTO;
-    lastCmdMs = millis();
-  } else if (msg == "MODE:MANUAL") {
-    mode = MODE_MANUAL;
-    lastCmdMs = millis();
-  } else if (msg.startsWith("SPD:")) {
-    baseSpeed = constrain(msg.substring(4).toInt(), 0, 100);
-    lastCmdMs = millis();
-  } else if (msg.startsWith("LR:")) {
-    // "LR:80,60" を分解
-    String body = msg.substring(3);
-    int comma = body.indexOf(',');
-    if (comma > 0) {
-      leftPct  = constrain(body.substring(0, comma).toInt(), -100, 100);
-      rightPct = constrain(body.substring(comma + 1).toInt(), -100, 100);
+    if (msg == "MODE:AUTO") {
+      mode = MODE_AUTO;
+      lastCmdMs = millis();
+    } else if (msg == "MODE:MANUAL") {
+      mode = MODE_MANUAL;
+      lastCmdMs = millis();
+    } else if (msg.startsWith("SPD:")) {
+      baseSpeed = constrain(msg.substring(4).toInt(), 0, 100);
+      lastCmdMs = millis();
+    } else if (msg.startsWith("LR:")) {
+      // "LR:80,60" を分解
+      String body = msg.substring(3);
+      int comma = body.indexOf(',');
+      if (comma > 0) {
+        leftPct  = constrain(body.substring(0, comma).toInt(), -100, 100);
+        rightPct = constrain(body.substring(comma + 1).toInt(), -100, 100);
+        running   = true;   // LR: 受信で自動走行開始（Processing側と連動）
+        lastCmdMs = millis();
+      }
+    } else if (msg.startsWith("RUN:")) {
+      running = (msg.substring(4).toInt() != 0);
+      lastCmdMs = millis();
+    } else if (msg == "STOP") {
+      running = false;
       lastCmdMs = millis();
     }
-  } else if (msg.startsWith("RUN:")) {
-    running = (msg.substring(4).toInt() != 0);
-    lastCmdMs = millis();
-  } else if (msg == "STOP") {
-    running = false;
-    lastCmdMs = millis();
-  }
 
-  // USB 未接続（バッテリー駆動）のときバッファ満杯でブロックするのを防ぐ
-  if (Serial) {
-    Serial.print("recv \"");
-    Serial.print(msg);
-    Serial.print("\"  mode=");
-    Serial.print(mode == MODE_AUTO ? "AUTO" : "MANUAL");
-    Serial.print("  spd=");
-    Serial.print(baseSpeed);
-    Serial.print("  L=");
-    Serial.print(leftPct);
-    Serial.print("  R=");
-    Serial.print(rightPct);
-    Serial.print("  run=");
-    Serial.println(running ? "ON" : "OFF");
-  }
+    // USB 未接続（バッテリー駆動）のときバッファ満杯でブロックするのを防ぐ
+    if (Serial) {
+      Serial.print("recv \"");
+      Serial.print(msg);
+      Serial.print("\"  mode=");
+      Serial.print(mode == MODE_AUTO ? "AUTO" : "MANUAL");
+      Serial.print("  spd=");
+      Serial.print(baseSpeed);
+      Serial.print("  L=");
+      Serial.print(leftPct);
+      Serial.print("  R=");
+      Serial.print(rightPct);
+      Serial.print("  run=");
+      Serial.println(running ? "ON" : "OFF");
+    }
 
-  // ACK 返信
-  Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
-  Udp.print("ACK mode=");
-  Udp.print(mode == MODE_AUTO ? "AUTO" : "MANUAL");
-  Udp.print(" spd=");
-  Udp.print(baseSpeed);
-  Udp.print(" L=");
-  Udp.print(leftPct);
-  Udp.print(" R=");
-  Udp.print(rightPct);
-  Udp.print(" run=");
-  Udp.print(running ? 1 : 0);
-  Udp.endPacket();
+    // ACK 返信
+    Udp.beginPacket(remoteIp, remotePort);
+    Udp.print("ACK mode=");
+    Udp.print(mode == MODE_AUTO ? "AUTO" : "MANUAL");
+    Udp.print(" spd=");
+    Udp.print(baseSpeed);
+    Udp.print(" L=");
+    Udp.print(leftPct);
+    Udp.print(" R=");
+    Udp.print(rightPct);
+    Udp.print(" run=");
+    Udp.print(running ? 1 : 0);
+    Udp.endPacket();
+  }
 }
 
 // ============================================================
