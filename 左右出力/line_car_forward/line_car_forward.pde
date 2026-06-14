@@ -271,6 +271,11 @@ void keyPressed() {
     return;
   }
 
+  if (key == ' ') {
+    execStop();
+    return;
+  }
+
   if (!inputFocused) return;
 
   if (key >= '0' && key <= '9') {
