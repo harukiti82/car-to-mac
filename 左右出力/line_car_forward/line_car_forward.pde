@@ -1,17 +1,27 @@
 /**
  * ============================================================
- *  ラインカー リモコン  ―  前進・速度のみ
+ *  ラインカー リモコン  ―  前進・BPM指定
  *  Processing → Arduino UNO R4 WiFi（UDP）
  * ============================================================
  *  操作:
- *    スライダーをドラッグ  上=速い / 下=遅い（0=停止）
- *    速度フィールドをクリック → 数字キーで入力 → Enter で確定
- *    離しても設定速度を維持して走り続ける
+ *    スライダーをドラッグ  上=速い / 下=停止
+ *    BPMフィールドをクリック → 数字キーで入力 → Enter で確定
+ *    離しても設定BPMを維持して走り続ける
  *    STOP ボタン: 即時停止してノブを0に戻す
+ *
+ *  BPM対応表（speed_bpm_table.pdf 準拠）:
+ *    BPM  40: v < 0.085 m/s
+ *    BPM  65: 0.085 ≤ v < 0.120
+ *    BPM  90: 0.120 ≤ v < 0.155
+ *    BPM 115: 0.155 ≤ v < 0.190
+ *    BPM 140: 0.190 ≤ v < 0.225
+ *    BPM 165: 0.225 ≤ v < 0.260
+ *    BPM 190: 0.260 ≤ v < 0.295
+ *    BPM 215: 0.295 ≤ v < 0.330
+ *    BPM 240: 0.330 ≤ v
  *
  *  プロトコル:
  *    "LR:<speed>,<speed>"  左右同値で送信（前進のみ）
- *    "RUN:1" / "RUN:0"
  *    "STOP"
  * ============================================================
  */
@@ -19,22 +29,25 @@
 import java.net.*;
 
 // ---- 通信設定 ----
-final String ARDUINO_IP   = "10.123.106.50";
+final String ARDUINO_IP   = "192.168.4.1";
 final int    ARDUINO_PORT = 8888;
 
 DatagramSocket udpSocket;
 InetAddress    arduinoAddr;
 
+// ---- BPM対応表 ----
+final int[] BPM_STEPS = {40, 65, 90, 115, 140, 165, 190, 215, 240};
+
 // ---- レイアウト定数 ----
 final int W = 300;
 final int H = 570;
 
-final int SLIDER_X      = W / 2;
-final int SLIDER_TOP    = 100;  // 上端（速度MAX = 100%）
-final int SLIDER_BOTTOM = 360;  // 下端（速度MIN = 0%）
+final int SLIDER_X      = W / 2 - 20;
+final int SLIDER_TOP    = 100;
+final int SLIDER_BOTTOM = 360;
 final int KNOB_R        = 24;
 
-final int FIELD_Y = 435;  // 入力フィールド中心Y
+final int FIELD_Y = 435;
 final int FIELD_W = 160;
 final int FIELD_H = 36;
 
@@ -44,9 +57,9 @@ final int BTN_W = 130;
 final int BTN_H = 44;
 
 // ---- 状態 ----
-float   knobY    = SLIDER_BOTTOM;  // 初期位置: 最下端（速度0）
-boolean dragging = false;
-int     speedPct = 0;  // 0〜100
+float   knobY      = SLIDER_BOTTOM;
+boolean dragging   = false;
+int     currentBpm = 0;  // 0=停止, 40〜240=走行
 
 // ---- テキスト入力 ----
 String  inputText    = "";
@@ -54,7 +67,7 @@ boolean inputFocused = false;
 
 // ---- 送信タイミング ----
 int lastSendMs = 0;
-final int SEND_INTERVAL = 50;  // 20 Hz
+final int SEND_INTERVAL = 50;
 
 // ============================================================
 void setup() {
@@ -75,7 +88,6 @@ void setup() {
 void draw() {
   background(28);
 
-  // 一定間隔で速度コマンドを送信
   if (millis() - lastSendMs > SEND_INTERVAL) {
     sendSpeed();
     lastSendMs = millis();
@@ -93,81 +105,98 @@ void drawTitle() {
   fill(180);
   noStroke();
   textSize(14);
-  text("ラインカー リモコン  前進専用", SLIDER_X, 30);
+  text("ラインカー リモコン  BPM指定", W / 2, 30);
 
   fill(80);
   textSize(11);
-  text(ARDUINO_IP + "  :" + ARDUINO_PORT, SLIDER_X, 50);
+  text(ARDUINO_IP + "  :" + ARDUINO_PORT, W / 2, 50);
 }
 
 // ---- スライダー描画 ----
 void drawSlider() {
-  // レール（背景）
   stroke(60);
   strokeWeight(8);
   line(SLIDER_X, SLIDER_TOP, SLIDER_X, SLIDER_BOTTOM);
 
-  // 速度に応じてノブより上を緑で塗る
   if (knobY > SLIDER_TOP) {
     stroke(50, 180, 100);
     strokeWeight(8);
     line(SLIDER_X, SLIDER_TOP, SLIDER_X, knobY);
   }
 
-  // 上端ラベル（速い）
   noStroke();
   fill(100, 200, 120);
-  textSize(13);
-  text("▲  速い", SLIDER_X, SLIDER_TOP - 22);
+  textSize(12);
+  text("▲ 速い", SLIDER_X, SLIDER_TOP - 22);
 
-  // 下端ラベル（遅い）
   fill(140);
-  text("▼  遅い", SLIDER_X, SLIDER_BOTTOM + 22);
+  text("▼ 停止", SLIDER_X, SLIDER_BOTTOM + 22);
 
-  // ノブのグロー（ドラッグ中）
   if (dragging) {
     noStroke();
     fill(50, 200, 100, 50);
     ellipse(SLIDER_X, knobY, KNOB_R * 3.4, KNOB_R * 3.4);
   }
 
-  // ノブ本体（速度0のとき灰色、それ以外は緑）
-  color knobFill = (speedPct == 0) ? color(110) : color(50, 200, 100);
+  color knobFill = (currentBpm == 0) ? color(110) : color(50, 200, 100);
   fill(knobFill);
   stroke(220, 100);
   strokeWeight(2);
   ellipse(SLIDER_X, knobY, KNOB_R * 2, KNOB_R * 2);
+
+  drawBpmTicks();
+}
+
+// ---- BPM目盛り ----
+void drawBpmTicks() {
+  for (int bpm : BPM_STEPS) {
+    float y = map(bpm, 0, 240, SLIDER_BOTTOM, SLIDER_TOP);
+    stroke(70);
+    strokeWeight(1);
+    line(SLIDER_X + KNOB_R + 6, y, SLIDER_X + KNOB_R + 16, y);
+    noStroke();
+    fill(100);
+    textSize(10);
+    textAlign(LEFT, CENTER);
+    text(bpm, SLIDER_X + KNOB_R + 19, y);
+  }
+  textAlign(CENTER, CENTER);
 }
 
 // ---- 速度テキスト ----
 void drawSpeedLabel() {
   noStroke();
-  color col = (speedPct == 0) ? color(140) : color(50, 200, 100);
-  fill(col);
-  textSize(20);
-  text((speedPct == 0 ? "停止" : "前進") + "  " + speedPct + "%", SLIDER_X, 395);
+  if (currentBpm == 0) {
+    fill(140);
+    textSize(20);
+    text("停止", W / 2, 390);
+  } else {
+    fill(50, 200, 100);
+    textSize(20);
+    text("前進  BPM " + currentBpm, W / 2, 390);
+    fill(90);
+    textSize(11);
+    text("(speed " + bpmToSpeedPct(currentBpm) + "%)", W / 2, 412);
+  }
 }
 
 // ---- テキスト入力フィールド ----
 void drawInputField() {
-  // ラベル
   fill(120);
   noStroke();
   textSize(11);
-  text("速度を直接入力（0〜100）", SLIDER_X, FIELD_Y - 24);
+  text("BPMを直接入力（40〜240 / 0=停止）", W / 2, FIELD_Y - 24);
 
-  // フィールド背景
   fill(inputFocused ? color(48) : color(38));
   stroke(inputFocused ? color(80, 160, 255) : color(75));
   strokeWeight(2);
-  rect(SLIDER_X - FIELD_W / 2, FIELD_Y - FIELD_H / 2, FIELD_W, FIELD_H, 7);
+  rect(W / 2 - FIELD_W / 2, FIELD_Y - FIELD_H / 2, FIELD_W, FIELD_H, 7);
 
-  // 入力テキスト + カーソル点滅
   fill(255);
   noStroke();
   textSize(17);
   String cursor = (inputFocused && frameCount % 50 < 25) ? "|" : "";
-  text(inputText + cursor + "  %", SLIDER_X, FIELD_Y);
+  text(inputText + cursor + "  BPM", W / 2, FIELD_Y);
 }
 
 // ---- STOP ボタン ----
@@ -187,49 +216,44 @@ boolean overButton(int mx, int my) {
 }
 
 boolean overField(int mx, int my) {
-  return mx > SLIDER_X - FIELD_W / 2 && mx < SLIDER_X + FIELD_W / 2 &&
-         my > FIELD_Y - FIELD_H / 2  && my < FIELD_Y + FIELD_H / 2;
+  return mx > W / 2 - FIELD_W / 2 && mx < W / 2 + FIELD_W / 2 &&
+         my > FIELD_Y - FIELD_H / 2 && my < FIELD_Y + FIELD_H / 2;
 }
 
 // ============================================================
 //  マウス操作
 // ============================================================
 void mousePressed() {
-  // STOP ボタン
   if (overButton(mouseX, mouseY)) {
     execStop();
     inputFocused = false;
     return;
   }
 
-  // テキスト入力フィールド
   if (overField(mouseX, mouseY)) {
     inputFocused = true;
-    inputText    = "";  // クリックで入力クリア
+    inputText    = "";
     return;
   }
 
-  // それ以外をクリックしたらフィールドのフォーカスを外す
   inputFocused = false;
 
-  // スライダーレール付近ならどこでもドラッグ開始
   if (abs(mouseX - SLIDER_X) < 36 &&
       mouseY > SLIDER_TOP - KNOB_R &&
       mouseY < SLIDER_BOTTOM + KNOB_R) {
-    dragging = true;
-    knobY    = constrain(mouseY, SLIDER_TOP, SLIDER_BOTTOM);
-    speedPct = (int) map(knobY, SLIDER_BOTTOM, SLIDER_TOP, 0, 100);
+    dragging   = true;
+    knobY      = constrain(mouseY, SLIDER_TOP, SLIDER_BOTTOM);
+    currentBpm = knobYToBpm(knobY);
   }
 }
 
 void mouseDragged() {
   if (!dragging) return;
-  knobY    = constrain(mouseY, SLIDER_TOP, SLIDER_BOTTOM);
-  speedPct = (int) map(knobY, SLIDER_BOTTOM, SLIDER_TOP, 0, 100);
+  knobY      = constrain(mouseY, SLIDER_TOP, SLIDER_BOTTOM);
+  currentBpm = knobYToBpm(knobY);
 }
 
 void mouseReleased() {
-  // 離してもノブはその位置のまま、速度を維持
   dragging = false;
 }
 
@@ -240,7 +264,6 @@ void keyPressed() {
   if (!inputFocused) return;
 
   if (key >= '0' && key <= '9') {
-    // 3桁（100）以上は入力させない
     if (inputText.length() < 3) {
       inputText += key;
     }
@@ -251,38 +274,63 @@ void keyPressed() {
   } else if (key == ENTER || key == RETURN) {
     applyInput();
   } else if (key == ESC) {
-    key          = 0;  // ESC によるウィンドウ終了を抑制
+    key          = 0;
     inputText    = "";
     inputFocused = false;
   }
 }
 
-// 入力値を確定してスライダーに反映
 void applyInput() {
   if (inputText.length() > 0) {
-    int val = constrain(Integer.parseInt(inputText), 0, 100);
-    speedPct = val;
-    knobY    = map(val, 0, 100, SLIDER_BOTTOM, SLIDER_TOP);
+    int val = Integer.parseInt(inputText);
+    if (val == 0) {
+      currentBpm = 0;
+    } else {
+      currentBpm = constrain(val, 40, 240);
+    }
+    knobY = bpmToKnobY(currentBpm);
   }
   inputText    = "";
   inputFocused = false;
 }
 
 // ============================================================
+//  BPM ↔ knobY 変換
+// ============================================================
+int knobYToBpm(float y) {
+  int raw = (int) map(y, SLIDER_BOTTOM, SLIDER_TOP, 0, 240);
+  if (raw < 20) return 0;
+  return constrain(raw, 40, 240);
+}
+
+float bpmToKnobY(int bpm) {
+  return map(bpm, 0, 240, SLIDER_BOTTOM, SLIDER_TOP);
+}
+
+// ============================================================
+//  BPM → speed% 変換（Arduino送信用）
+//  BPM 40〜240 → speed 20〜100 にリニアマッピング
+// ============================================================
+int bpmToSpeedPct(int bpm) {
+  if (bpm <= 0) return 0;
+  return (int) map(constrain(bpm, 40, 240), 40, 240, 20, 100);
+}
+
+// ============================================================
 //  送信処理
 // ============================================================
 void sendSpeed() {
-  if (speedPct == 0) {
-    udpSend("RUN:0");
+  if (currentBpm == 0) {
+    udpSend("STOP");
   } else {
-    udpSend("RUN:1");
-    udpSend("LR:" + speedPct + "," + speedPct);
+    int spd = bpmToSpeedPct(currentBpm);
+    udpSend("LR:" + spd + "," + spd);
   }
 }
 
 void execStop() {
-  speedPct = 0;
-  knobY    = SLIDER_BOTTOM;  // ノブを最下端（0%）に戻す
+  currentBpm = 0;
+  knobY      = SLIDER_BOTTOM;
   udpSend("STOP");
 }
 
