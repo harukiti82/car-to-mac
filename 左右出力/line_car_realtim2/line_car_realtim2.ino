@@ -165,6 +165,22 @@ void setup()
 // ============================================================
 void loop()
 {
+  // ★診断用ハートビート: loop が生きているか／g_pulse が更新されているかを
+  //   末尾の処理と無関係に、loop 先頭で必ず出力する。
+  //   loop# が増えない → loop が止まっている
+  //   loop# は増えるが L/R が 1500 のまま → 末尾の更新に到達していない
+  static unsigned long lastHb = 0;
+  static uint32_t loopCount = 0;
+  loopCount++;
+  if (Serial && millis() - lastHb > 500) {
+    lastHb = millis();
+    Serial.print("loop#");
+    Serial.print(loopCount);
+    Serial.print("  L=");
+    Serial.print(g_pulseL_us);
+    Serial.print("  R=");
+    Serial.println(g_pulseR_us);
+  }
 
   receiveUDP();
   receiveSerial1();
@@ -240,8 +256,10 @@ void startAP()
 void receiveUDP()
 {
   int packetSize;
-  // 1フレームで複数パケット届いた場合も全部処理する
-  while ((packetSize = Udp.parsePacket()) > 0) {
+  // 1回の loop で処理するパケット数を制限し、while ループに居座って
+  // loop 末尾（パルス幅更新）へ到達できなくなるのを防ぐ
+  int pktGuard = 0;
+  while ((packetSize = Udp.parsePacket()) > 0 && pktGuard++ < 4) {
     int len = Udp.read(packetBuf, sizeof(packetBuf) - 1);
     if (len <= 0) continue;
     packetBuf[len] = '\0';
