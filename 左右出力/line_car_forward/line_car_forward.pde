@@ -261,6 +261,16 @@ void mouseReleased() {
 //  キーボード入力
 // ============================================================
 void keyPressed() {
+  // 矢印キー↑↓: BPMステップ切り替え（フォーカス外でも動作）
+  if (key == CODED) {
+    if (keyCode == UP) {
+      stepBpm(+1);
+    } else if (keyCode == DOWN) {
+      stepBpm(-1);
+    }
+    return;
+  }
+
   if (!inputFocused) return;
 
   if (key >= '0' && key <= '9') {
@@ -292,6 +302,24 @@ void applyInput() {
   }
   inputText    = "";
   inputFocused = false;
+}
+
+// ============================================================
+//  BPMステップ切り替え（矢印キー用）
+//  dir=+1 で1段階上、dir=-1 で1段階下（0=停止を含む）
+// ============================================================
+void stepBpm(int dir) {
+  int idx = -1;  // -1 = 停止(BPM 0)
+  for (int i = 0; i < BPM_STEPS.length; i++) {
+    if (currentBpm >= BPM_STEPS[i]) idx = i;
+  }
+  idx += dir;
+  if (idx < 0) {
+    currentBpm = 0;
+  } else {
+    currentBpm = BPM_STEPS[constrain(idx, 0, BPM_STEPS.length - 1)];
+  }
+  knobY = bpmToKnobY(currentBpm);
 }
 
 // ============================================================
